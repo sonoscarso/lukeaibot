@@ -47,6 +47,11 @@ Fonti: [router gratuito](https://openrouter.ai/docs/faq),
 2. Crea una chiave gratuita Groq dalla console indicata sopra.
 3. Crea un PostgreSQL su Neon o Supabase e copia la stringa di connessione
    PostgreSQL, **non** l'URL HTTP del progetto o una chiave API Supabase.
+   Se nei log compare `PoolTimeout`, verifica che il valore Render inizi con
+   `postgresql://` o `postgres://`, includa `?sslmode=require`, e contenga host,
+   porta, database, utente e password validi. Non usare un URL HTTP Supabase,
+   una chiave API, né una stringa scaduta del pooler. Il bot ritenta cinque volte
+   e poi termina con un messaggio generico senza stampare credenziali.
    Usa un database dedicato a questo bot e un utente con permessi di creazione
    tabelle. Mantieni TLS, ad esempio `?sslmode=require`; usa `verify-full` con
    certificati verificabili quando previsto dal provider.
@@ -105,6 +110,9 @@ Fonte: [limiti ufficiali Render Free](https://render.com/docs/free).
 | `/conosci @utente` o reply | Aggiorna e mostra profilo da nome, username, bio se Telegram la espone, messaggi osservati e risposte ad altri utenti. |
 | `/conosci gruppo` | Aggiorna fino a 8 profili, partendo dai mai elaborati o meno aggiornati; ripetere per proseguire. Evita esplosioni di richieste API nei gruppi grandi. |
 | `/argomenta <tesi>` | Circa 100 parole nella persona corrente; non inventa prove a supporto di premesse false. |
+| `/imposgiacomo 1\|2\|3` | 1: risponde solo a tag/reply; 2: tag/reply più interventi casuali; 3: solo interventi casuali. Persistente per chat. |
+| `/impostazioni media on\|off` | Abilita o disabilita sticker/GIF automatici e la GIF di `/negra` nella chat. |
+| `/impostazioni risposta breve\|lunga` | Imposta risposte brevi (40–100 parole) o lunghe (250–400). Persistente per chat. |
 
 Sono accettate anche maiuscole nei comandi e `/comando@NomeDelBot`.
 In privato risponde al testo; nei gruppi risponde ai comandi, alle menzioni

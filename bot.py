@@ -44,7 +44,12 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS chats (
  chat_id BIGINT PRIMARY KEY, persona TEXT NOT NULL DEFAULT 'Amico schietto e ironico',
- summary TEXT NOT NULL DEFAULT '', media_sent_at TIMESTAMPTZ);
+ summary TEXT NOT NULL DEFAULT '', media_sent_at TIMESTAMPTZ,
+ presence_mode TEXT NOT NULL DEFAULT 'mentioned', media_enabled BOOLEAN NOT NULL DEFAULT true,
+ response_length TEXT NOT NULL DEFAULT 'short');
+ALTER TABLE chats ADD COLUMN IF NOT EXISTS presence_mode TEXT NOT NULL DEFAULT 'mentioned';
+ALTER TABLE chats ADD COLUMN IF NOT EXISTS media_enabled BOOLEAN NOT NULL DEFAULT true;
+ALTER TABLE chats ADD COLUMN IF NOT EXISTS response_length TEXT NOT NULL DEFAULT 'short';
 CREATE TABLE IF NOT EXISTS members (
  chat_id BIGINT NOT NULL REFERENCES chats(chat_id), user_id BIGINT NOT NULL,
  name TEXT NOT NULL, username TEXT, bio TEXT, profile TEXT NOT NULL DEFAULT '',
@@ -151,11 +156,22 @@ class Store:
             check=AsyncConnectionPool.check_connection)
 
     async def start(self):
-        await self.pool.open(wait=True, timeout=30)
-        async with self.pool.connection() as conn:
-            # Serialize schema creation during overlapping deployments.
-            await conn.execute("SELECT pg_advisory_xact_lock(73941825)")
-            await conn.execute(SCHEMA)
+        last_error = None
+        for attempt in range(1, 6):
+            try:
+                await self.pool.open(wait=True, timeout=12)
+                async with self.pool.connection() as conn:
+                    await conn.execute("SELECT pg_advisory_xact_lock(73941825)")
+                    await conn.execute(SCHEMA)
+                return
+            except Exception as exc:
+                last_error = exc
+                with contextlib.suppress(Exception):
+                    await self.pool.close()
+                log.warning("PostgreSQL connection attempt %s/5 failed: %s", attempt, type(exc).__name__)
+                if attempt < 5:
+                    await asyncio.sleep(min(2 * attempt, 8))
+        raise RuntimeError("PostgreSQL non raggiungibile: controlla DATABASE_URL, SSL e allowlist.") from last_error
 
     async def run(self, sql, args=(), one=False):
         async with self.pool.connection() as conn:
@@ -312,6 +328,8 @@ class BotService:
             if budget <= 0:
                 break
         state = {"persona": chat["persona"][:1500], "memoria_chat": chat["summary"][:2000],
+                 "modalita_presenza": chat["presence_mode"], "media_abilitati": chat["media_enabled"],
+                 "lunghezza_risposta": chat["response_length"],
                  "interlocutore": dict(user) if user else {"user_id": message.from_user.id},
                  "cronologia": list(reversed(history))}
         # Bounded retrieval from durable older messages, scoped to this chat/user.
@@ -437,13 +455,17 @@ class BotService:
         if cmd in ("/listaaggiorna", "/stop"):
             await self.send(message, "Usa questo comando in privato con il bot.")
             return
-        recognized = {"/persona", "/conosci", "/argomenta", "/negra"}
+        recognized = {"/persona", "/conosci", "/argomenta", "/negra", "/imposgiacomo", "/impostazioni"}
+        chat_state = await self.db.run("SELECT presence_mode,media_enabled,response_length FROM chats WHERE chat_id=%s", (cid,), one=True)
         addressed = message.chat.type == "private" or (
             bool(reply and reply.from_user and reply.from_user.id == context.bot.id)) or (
             bool(re.search(r"@" + re.escape(context.bot.username) + r"\b", text, re.I)))
         if cmd and cmd not in recognized:
             return
-        if not cmd and (not addressed or not text):
+        if not cmd and (not text or (chat_state["presence_mode"] == "mentioned" and not addressed) or
+                         (chat_state["presence_mode"] == "random" and addressed)):
+            return
+        if not cmd and chat_state["presence_mode"] == "mentioned_random" and not addressed and random.random() > 0.035:
             return
         if not self.rate_allowed(cid, user.id):
             # Silently drop rapid requests to avoid generating more spam.
@@ -454,6 +476,34 @@ class BotService:
                 return
             await self.db.run("UPDATE chats SET persona=%s WHERE chat_id=%s", (arg.strip()[:1500], cid))
             await self.send(message, "Persona aggiornata e salvata per questa chat.")
+            return
+        if cmd == "/imposgiacomo":
+            key = arg.strip().lower().replace(" ", "_")
+            if key in ("1", "solo_tag", "solo_menzione", "tag", "menzione"):
+                mode, label = "mentioned", "solo tag/reply"
+            elif key in ("2", "tag_e_casuale", "misto"):
+                mode, label = "mentioned_random", "tag/reply e interventi casuali"
+            elif key in ("3", "solo_casuale", "casuale", "random"):
+                mode, label = "random", "solo interventi casuali"
+            else:
+                await self.send(message, "Uso: /imposgiacomo 1 (solo tag/reply), 2 (tag/reply + casuale), 3 (solo casuale).")
+                return
+            await self.db.run("UPDATE chats SET presence_mode=%s WHERE chat_id=%s", (mode, cid))
+            await self.send(message, f"Modalità salvata: {label}.")
+            return
+        if cmd == "/impostazioni":
+            parts = arg.lower().split()
+            if len(parts) >= 2 and parts[0] in ("media", "sticker", "gif") and parts[1] in ("on", "off", "si", "sì", "no"):
+                enabled = parts[1] in ("on", "si", "sì")
+                await self.db.run("UPDATE chats SET media_enabled=%s WHERE chat_id=%s", (enabled, cid))
+            elif len(parts) >= 2 and parts[0] in ("risposta", "risposte", "lunghezza") and parts[1] in ("breve", "brevi", "lunga", "lunghe"):
+                length = "long" if parts[1].startswith("lung") else "short"
+                await self.db.run("UPDATE chats SET response_length=%s WHERE chat_id=%s", (length, cid))
+            else:
+                await self.send(message, "Uso: /impostazioni media on|off oppure /impostazioni risposta breve|lunga")
+                return
+            fresh = await self.db.run("SELECT presence_mode,media_enabled,response_length FROM chats WHERE chat_id=%s", (cid,), one=True)
+            await self.send(message, f"Impostazioni salvate: modalità={fresh['presence_mode']}, media={'on' if fresh['media_enabled'] else 'off'}, risposte={'lunghe' if fresh['response_length']=='long' else 'brevi'}.")
             return
         try:
             if cmd == "/conosci":
@@ -500,6 +550,8 @@ class BotService:
                 instruction = "Argomenta brevemente, circa 100 parole, con la persona corrente. Tesi: " + arg
             else:
                 instruction = "Rispondi all'interlocutore corrente e al suo messaggio: " + text
+            instruction += (" Rispondi in modo articolato, circa 250-400 parole." if chat_state["response_length"] == "long"
+                            else " Rispondi in modo breve, circa 40-100 parole.")
             if not cmd:
                 member = await self.db.run("SELECT * FROM members WHERE chat_id=%s AND user_id=%s",
                                             (cid, user.id), one=True)
@@ -514,9 +566,9 @@ class BotService:
             wants_media = "[MEDIA]" in answer
             answer = answer.replace("[MEDIA]", "").strip() or "Eccomi."
             await self.send(message, answer, prefix)
-            if cmd == "/negra":
+            if cmd == "/negra" and chat_state["media_enabled"]:
                 await self.send_media(message, curated=True)
-            elif wants_media and random.random() < self.c.media_probability:
+            elif chat_state["media_enabled"] and wants_media and random.random() < self.c.media_probability:
                 await self.send_media(message)
         except AIUnavailable as exc:
             await self.send(message, str(exc))
@@ -529,6 +581,9 @@ In privato rispondo al testo; nei gruppi taggami o rispondi ai miei messaggi.
 /conosci gruppo — aggiorna un blocco di profili dei partecipanti osservati
 /argomenta <tesi> — argomentazione breve
 /negra @utente (o reply) — battuta casuale e GIF dalla lista admin
+/imposgiacomo 1|2|3 — modalità presenza: tag/reply, mista, oppure solo casuale
+/impostazioni media on|off — abilita/disabilita sticker e GIF automatici
+/impostazioni risposta breve|lunga — controlla la lunghezza delle risposte
 /listaaggiorna e /stop — solo @SoyLe0 in privato
 Memorizzo messaggi visibili e file_id dei media di gruppo. Parti del contesto vengono
 inviate al provider AI. I media di gruppo possono essere riusati altrove se abilitato
