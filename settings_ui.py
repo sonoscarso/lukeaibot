@@ -19,7 +19,7 @@ def panel(row, page='home'):
         key = {'presence': 'presence_mode', 'length': 'response_length', 'tone': 'tone'}[page]
         values = MODES if page == 'presence' else TONES if page == 'tone' else {'short': 'Brevi', 'long': 'Lunghe'}
         text = {'presence': 'Quando intervengo\nI comandi restano disponibili. Il casuale si attiva sui nuovi messaggi del gruppo.',
-                'length': 'Lunghezza risposte\nBrevi: circa 40–100 parole. Lunghe: circa 250–400.',
+                'length': 'Lunghezza risposte\nBrevi: una o due frasi. Lunghe: approfondite quando serve. Saluti e battute restano brevi. I comandi di analisi hanno lunghezze proprie.',
                 'tone': 'Tono\nVolgare permette parolacce esplicite e battute taglienti.'}[page]
         rows = [[Button(('✓ ' if row[key] == value else '') + label,
                         callback_data=f'settings:set_{page}:{value}')] for value, label in values.items()] + [back]

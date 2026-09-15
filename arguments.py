@@ -1,5 +1,6 @@
 """Single independent request for /argomenta; no refusal retries or routing changes."""
 import json
+from conversation_style import CHAT_STYLE
 
 
 def argument_messages(thesis, settings):
@@ -13,7 +14,7 @@ def argument_messages(thesis, settings):
     }.get(settings.get('tone'), 'Registro diretto e colloquiale.')
     length = '250–400 parole' if settings.get('response_length') == 'long' else '40–100 parole'
     system = (
-        'Scrivi in italiano una breve argomentazione sul testo fornito. '
+        CHAT_STYLE + '\nScrivi in italiano una breve argomentazione sul testo fornito. '
         'Se contiene una tesi, presenta le ragioni a suo favore distinguendo opinioni e fatti. '
         'Se contiene solo un nome o un tema, fornisci una spiegazione con una tesi interpretativa chiara; '
         'se ambiguo, dichiara brevemente quale significato stai usando. '

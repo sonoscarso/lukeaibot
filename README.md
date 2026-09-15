@@ -6,6 +6,13 @@ Nessun database SQLite, nessun salvataggio locale dei dati del bot.
 
 ## Nuova versione: 50 funzioni e pannello funzionante
 
+Stile conversazionale aggiornato: saluti e conferme ricevono poche parole anche
+in modalità lunga. La modalità breve usa di norma una o due frasi senza quota
+minima; quella lunga approfondisce solo quando serve. Il prompt scoraggia slogan,
+emoji decorative, offerte di assistenza non richieste e parolacce fuori contesto.
+Le risposte provocatorie possono essere sarcastiche e volgari ma restano pertinenti.
+I comandi di analisi, come `/argomenta`, mantengono le loro lunghezze specifiche.
+
 `/argomenta` usa ora una richiesta indipendente con la sola tesi, persona,
 tono e lunghezza: non reinserisce rifiuti precedenti, cronologia o profili.
 Accetta anche un singolo tema (es. `aura`) e distingue argomentazione di opinioni
