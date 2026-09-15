@@ -21,9 +21,9 @@ from aiohttp import web
 from dotenv import load_dotenv
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
-from telegram import LinkPreviewOptions, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions, Update
 from telegram.error import BadRequest, Conflict, RetryAfter, TelegramError
-from telegram.ext import Application, ContextTypes, MessageHandler, filters
+from telegram.ext import Application, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 
 log = logging.getLogger("telegram_ai")
 ADMIN_USERNAME = "soyle0"
@@ -403,6 +403,71 @@ class BotService:
                 await self.db.run("UPDATE media SET usable=false WHERE chat_id=%s AND unique_id=%s",
                                   (row['chat_id'], row['unique_id']))
 
+    async def settings_panel(self, target, chat_id, edit=False):
+        row = await self.db.run("SELECT presence_mode,media_enabled,response_length FROM chats WHERE chat_id=%s", (chat_id,), one=True)
+        mode = {"mentioned": "solo tag/reply", "mentioned_random": "tag/reply + casuale", "random": "solo casuale"}[row["presence_mode"]]
+        media = "attivi" if row["media_enabled"] else "disattivati"
+        length = "lunghe" if row["response_length"] == "long" else "brevi"
+        text = f"⚙️ <b>Impostazioni bot</b>\n\nPresenza: <b>{mode}</b>\nMedia: <b>{media}</b>\nRisposte: <b>{length}</b>\n\nScegli una categoria:"
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🎯 Modalità presenza", callback_data="settings:presence")],
+            [InlineKeyboardButton("🎞 Sticker e GIF", callback_data="settings:media")],
+            [InlineKeyboardButton("✍️ Lunghezza risposte", callback_data="settings:length")],
+        ])
+        if edit:
+            await target.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
+        else:
+            await target.reply_text(text, parse_mode="HTML", reply_markup=keyboard, do_quote=False)
+
+    async def settings_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        query = update.callback_query
+        if not query or not query.message or not query.from_user:
+            return
+        await query.answer()
+        chat_id = query.message.chat_id
+        data = query.data or ""
+        if not data.startswith("settings:"):
+            return
+        action = data.split(":", 1)[1]
+        if action == "home":
+            await self.settings_panel(query, chat_id, edit=True)
+            return
+        if action == "presence":
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("✅ Solo tag / reply", callback_data="settings:set_presence:mentioned")],
+                [InlineKeyboardButton("🔀 Tag / reply + casuale", callback_data="settings:set_presence:mentioned_random")],
+                [InlineKeyboardButton("🎲 Solo casuale", callback_data="settings:set_presence:random")],
+                [InlineKeyboardButton("⬅️ Indietro", callback_data="settings:home")]])
+            await query.edit_message_text("🎯 <b>Modalità presenza</b>\n\nScegli quando il bot può rispondere:", parse_mode="HTML", reply_markup=keyboard)
+            return
+        if action == "media":
+            row = await self.db.run("SELECT media_enabled FROM chats WHERE chat_id=%s", (chat_id,), one=True)
+            label = "Disattiva media" if row["media_enabled"] else "Attiva media"
+            value = "off" if row["media_enabled"] else "on"
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton(("✅ " if row["media_enabled"] else "⛔ ") + label, callback_data=f"settings:set_media:{value}")],
+                [InlineKeyboardButton("⬅️ Indietro", callback_data="settings:home")]])
+            await query.edit_message_text("🎞 <b>Sticker e GIF</b>\n\nControlla i media automatici e la GIF di /negra.", parse_mode="HTML", reply_markup=keyboard)
+            return
+        if action == "length":
+            row = await self.db.run("SELECT response_length FROM chats WHERE chat_id=%s", (chat_id,), one=True)
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton(("✅ " if row["response_length"] == "short" else "") + "Risposte brevi", callback_data="settings:set_length:short")],
+                [InlineKeyboardButton(("✅ " if row["response_length"] == "long" else "") + "Risposte lunghe", callback_data="settings:set_length:long")],
+                [InlineKeyboardButton("⬅️ Indietro", callback_data="settings:home")]])
+            await query.edit_message_text("✍️ <b>Lunghezza risposte</b>\n\nScegli lo stile della risposta AI.", parse_mode="HTML", reply_markup=keyboard)
+            return
+        parts = action.split(":")
+        if len(parts) == 3 and parts[0] == "set_presence" and parts[1] in ("mentioned", "mentioned_random", "random"):
+            await self.db.run("UPDATE chats SET presence_mode=%s WHERE chat_id=%s", (parts[1], chat_id))
+        elif len(parts) == 2 and parts[0] == "set_media" and parts[1] in ("on", "off"):
+            await self.db.run("UPDATE chats SET media_enabled=%s WHERE chat_id=%s", (parts[1] == "on", chat_id))
+        elif len(parts) == 2 and parts[0] == "set_length" and parts[1] in ("short", "long"):
+            await self.db.run("UPDATE chats SET response_length=%s WHERE chat_id=%s", (parts[1], chat_id))
+        else:
+            return
+        await self.settings_panel(query, chat_id, edit=True)
+
     async def handle(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         message, user = update.effective_message, update.effective_user
         if not message or not user or user.is_bot or message.sender_chat:
@@ -462,7 +527,7 @@ class BotService:
         if cmd in ("/listaaggiorna", "/stop"):
             await self.send(message, "Usa questo comando in privato con il bot.")
             return
-        recognized = {"/persona", "/conosci", "/argomenta", "/negra", "/imposgiacomo", "/impostazioni"}
+        recognized = {"/persona", "/conosci", "/argomenta", "/negra", "/imposgiacomo", "/imposgiacomino", "/impostazioni"}
         chat_state = await self.db.run("SELECT presence_mode,media_enabled,response_length FROM chats WHERE chat_id=%s", (cid,), one=True)
         addressed = message.chat.type == "private" or (
             bool(reply and reply.from_user and reply.from_user.id == context.bot.id)) or (
@@ -483,6 +548,9 @@ class BotService:
                 return
             await self.db.run("UPDATE chats SET persona=%s WHERE chat_id=%s", (arg.strip()[:1500], cid))
             await self.send(message, "Persona aggiornata e salvata per questa chat.")
+            return
+        if cmd == "/imposgiacomino":
+            await self.settings_panel(message, cid)
             return
         if cmd == "/imposgiacomo":
             key = arg.strip().lower().replace(" ", "_")
@@ -588,9 +656,8 @@ In privato rispondo al testo; nei gruppi taggami o rispondi ai miei messaggi.
 /conosci gruppo — aggiorna un blocco di profili dei partecipanti osservati
 /argomenta <tesi> — argomentazione breve
 /negra @utente (o reply) — battuta casuale e GIF dalla lista admin
-/imposgiacomo 1|2|3 — modalità presenza: tag/reply, mista, oppure solo casuale
-/impostazioni media on|off — abilita/disabilita sticker e GIF automatici
-/impostazioni risposta breve|lunga — controlla la lunghezza delle risposte
+/imposgiacomino — apre il pannello con bottoni per tutte le impostazioni
+/imposgiacomo 1|2|3 — alias testuale della modalità presenza
 /listaaggiorna e /stop — solo @SoyLe0 in privato
 Memorizzo messaggi visibili e file_id dei media di gruppo. Parti del contesto vengono
 inviate al provider AI. I media di gruppo possono essere riusati altrove se abilitato
@@ -645,6 +712,7 @@ async def main():
         async with httpx.AsyncClient(timeout=httpx.Timeout(c.timeout, connect=8)) as client:
             service = BotService(c, db, AI(c, client))
             application = Application.builder().token(c.token).concurrent_updates(False).build()
+            application.add_handler(CallbackQueryHandler(service.settings_callback, pattern=r"^settings:"))
             application.add_handler(MessageHandler(filters.ALL, service.handle))
             application.add_error_handler(errors)
             await application.initialize()
