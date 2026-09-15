@@ -6,6 +6,12 @@ Nessun database SQLite, nessun salvataggio locale dei dati del bot.
 
 ## Nuova versione: 50 funzioni e pannello funzionante
 
+`/argomenta` usa ora una richiesta indipendente con la sola tesi, persona,
+tono e lunghezza: non reinserisce rifiuti precedenti, cronologia o profili.
+Accetta anche un singolo tema (es. `aura`) e distingue argomentazione di opinioni
+da premesse fattuali da correggere. Fa una sola richiesta, con il normale
+fallback per errori tecnici; non riprova o cambia provider dopo un rifiuto.
+
 Apri `/imposgiacomino`: categorie presenza, sticker/GIF, lunghezza, tono e
 frequenza casuale. La spunta indica il valore realmente salvato; puoi tornare
 indietro o chiudere. Il tono predefinito è **volgare e tagliente**: il prompt

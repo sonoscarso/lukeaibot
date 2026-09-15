@@ -26,6 +26,7 @@ from telegram.error import BadRequest, Conflict, RetryAfter, TelegramError
 from telegram.ext import Application, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 from features import CATALOG, EXTRA_SCHEMA, Features, should_reply
 from settings_ui import panel
+from arguments import argument_messages
 
 log = logging.getLogger("telegram_ai")
 ADMIN_USERNAME = "soyle0"
@@ -595,6 +596,16 @@ class BotService:
             await self.send(message, f"Impostazioni salvate: modalità={fresh['presence_mode']}, media={'on' if fresh['media_enabled'] else 'off'}, risposte={'lunghe' if fresh['response_length']=='long' else 'brevi'}.")
             return
         try:
+            if cmd == '/argomenta':
+                try:
+                    messages = argument_messages(arg, chat_state)
+                except ValueError as exc:
+                    await self.send(message, str(exc))
+                    return
+                # Each argument is independent: prior refusals and user profiles are irrelevant.
+                answer = await self.ai.ask(messages)
+                await self.send(message, answer)
+                return
             if cmd == "/conosci":
                 if arg.strip().lower() == "gruppo":
                     if message.chat.type == "private":
@@ -632,11 +643,6 @@ class BotService:
                     + json.dumps({"nome": member['name'], "id": member['user_id']}, ensure_ascii=False)
                     + ". Tema casuale: " + random.choice(["piccioni astronauti", "pasta cosmica", "un tostapane sindaco", "draghi in ferie"])
                     + ". Battuta giocosa senza inventare fatti o attaccare identità personali.")
-            elif cmd == "/argomenta":
-                if not arg.strip():
-                    await self.send(message, "Uso: /argomenta <tesi>")
-                    return
-                instruction = "Argomenta brevemente, circa 100 parole, con la persona corrente. Tesi: " + arg
             else:
                 instruction = "Rispondi all'interlocutore corrente e al suo messaggio: " + text
             instruction += (" Rispondi in modo articolato, circa 250-400 parole." if chat_state["response_length"] == "long"
