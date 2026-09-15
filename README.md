@@ -6,9 +6,9 @@ Nessun database SQLite, nessun salvataggio locale dei dati del bot.
 
 ## Scelta AI verificata il 15 settembre 2026
 
-**Groq, modello `openai/gpt-oss-20b`**, API compatibile OpenAI, endpoint
+**Groq, modello `llama-3.3-70b-versatile`**, API compatibile OpenAI, endpoint
 `https://api.groq.com/openai/v1/chat/completions`.
-Il modello è nella lista di produzione e Groq indica circa 1000 token/s:
+Il modello è nella lista di produzione e Groq indica circa 280 token/s:
 è una misura del provider, non un benchmark di questo progetto né una garanzia
 sul tempo totale della risposta. I limiti gratuiti pubblicati per questo modello
 sono 30 richieste/minuto, 1000/giorno, 8000 token/minuto, 200000 token/giorno;
@@ -176,7 +176,7 @@ endpoint HTTP che espongono memorie o segreti.
 | `TELEGRAM_BOT_TOKEN` | Obbligatoria, token BotFather. |
 | `DATABASE_URL` | Obbligatoria, URI PostgreSQL con TLS del provider. |
 | `GROQ_API_KEY` | Obbligatoria, chiave Groq. |
-| `AI_MODEL` | `openai/gpt-oss-20b`; controllare che l'eventuale alternativa sia gratuita nel proprio piano. |
+| `AI_MODEL` | `llama-3.3-70b-versatile`; verificare quote e permessi del proprio piano Groq. |
 | `OPENROUTER_API_KEY` | Vuota: fallback disabilitato. |
 | `FALLBACK_MODEL` | `openrouter/free`, oppure modello `:free`. |
 | `ADMIN_USER_ID` | Vuoto/0: bootstrap username; meglio ID numerico di @SoyLe0. |
