@@ -4,16 +4,43 @@ Progetto pronto per un Render Web Service Python 3.12. Un unico processo esegue
 long polling Telegram asincrono e server HTTP su `0.0.0.0:$PORT`.
 Nessun database SQLite, nessun salvataggio locale dei dati del bot.
 
+## Nuova versione: 50 funzioni e pannello funzionante
+
+Apri `/imposgiacomino`: categorie presenza, sticker/GIF, lunghezza, tono e
+frequenza casuale. La spunta indica il valore realmente salvato; puoi tornare
+indietro o chiudere. Il tono predefinito è **volgare e tagliente**: il prompt
+consente esplicitamente parolacce senza asterischi e battute in risposta agli
+insulti. Nessuna sostituzione locale delle parolacce; restano le scelte del
+modello e le regole del provider. Non esiste una garanzia di assenza di rifiuti.
+
+Le **50 nuove funzioni** sono descritte con esempi in [FUNZIONI.md](FUNZIONI.md).
+Usa `/comandi`, `/comandi ai` o `/comandi strumenti`. I comandi sono registrati
+anche nel menu Telegram all'avvio dell'istanza attiva.
+
+Il casuale è una probabilità sui nuovi messaggi non indirizzati del gruppo,
+non un timer che scrive quando tutti tacciono. Default: 3,5%, minimo 10 minuti.
+Modalità 3 ignora tag/reply, ma continua a estrarre casualmente gli altri messaggi;
+modalità 2 risponde ai tag/reply e valuta casualmente gli altri. In privato il bot
+risponde normalmente; `/pausa` sospende la conversazione anche in privato.
+I comandi restano sempre disponibili (salvo rate limit).
+`/silenzio 23-8` limita solo gli interventi casuali, con fuso Europe/Rome.
+
+Correzioni incluse: ricezione degli eventi `callback_query` nel polling, parsing
+dei bottoni presenza, gestione dei click ripetuti, intervallo casuale persistente
+e chiusura sicura quando il database non è stato inizializzato.
+
 ## Scelta AI verificata il 15 settembre 2026
 
 **Groq, modello `llama-3.3-70b-versatile`**, API compatibile OpenAI, endpoint
 `https://api.groq.com/openai/v1/chat/completions`.
 Il modello è nella lista di produzione e Groq indica circa 280 token/s:
 è una misura del provider, non un benchmark di questo progetto né una garanzia
-sul tempo totale della risposta. I limiti gratuiti pubblicati per questo modello
-sono 30 richieste/minuto, 1000/giorno, 8000 token/minuto, 200000 token/giorno;
-verifica sempre le quote effettive nella tua console. Non occorre abilitare un
-piano a pagamento per provare il bot entro le quote gratuite.
+sul tempo totale della risposta. La documentazione attuale lo contrassegna
+**Enterprise / Contact Sales**: non si può garantire l'accesso gratuito con ogni
+account. Verifica disponibilità, permessi e quote nella tua console. Le quote
+pubblicate in precedenza in questo README appartenevano al modello GPT-OSS,
+non a Llama; sono state rimosse. Il modello rimane quello richiesto dall'utente.
+Per tornare alla scelta iniziale modifica `AI_MODEL=openai/gpt-oss-20b` in Render.
 
 Fonti ufficiali: [modelli Groq](https://console.groq.com/docs/models),
 [limiti e piano gratuito](https://console.groq.com/docs/rate-limits),
@@ -139,6 +166,12 @@ e nella riga `settings.admin_id` tramite il pannello database.
   automatica; non vengono scaricati allegati o cronologie precedenti.
 - `members`: nome, username corrente osservato, bio eventualmente accessibile,
   profilo sintetico, data dell'ultima osservazione e dell'ultimo profilo.
+- `user_items`: note, attività e fatti salvati con `/ricorda`, separati per chat
+  e autore. Le liste mostrano solo gli elementi di chi esegue il comando.
+  In un gruppo il testo restituito è visibile al gruppo: non è una cassaforte privata.
+  Il prompt conversazionale include fino a 10 fatti espliciti recenti, massimo
+  300 caratteri ciascuno. `/scorda`, `/eliminanota` e `/eliminatodo` rimuovono
+  solo l'elemento selezionato: i messaggi originali restano nella cronologia.
 - Il profilo si aggiorna con `/conosci`; durante la conversazione viene anche
   aggiornato se ci sono almeno 20 messaggi dell'utente successivi all'ultimo profilo.
 - Il prompt include persona, interlocutore, profilo, sintesi gruppo, ultimi

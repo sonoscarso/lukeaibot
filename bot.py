@@ -21,9 +21,11 @@ from aiohttp import web
 from dotenv import load_dotenv
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, LinkPreviewOptions, Update
+from telegram import BotCommand, LinkPreviewOptions, Update
 from telegram.error import BadRequest, Conflict, RetryAfter, TelegramError
 from telegram.ext import Application, CallbackQueryHandler, ContextTypes, MessageHandler, filters
+from features import CATALOG, EXTRA_SCHEMA, Features, should_reply
+from settings_ui import panel
 
 log = logging.getLogger("telegram_ai")
 ADMIN_USERNAME = "soyle0"
@@ -31,6 +33,10 @@ SYSTEM = """Sei un bot AI Telegram con uno stile colloquiale italiano, spontaneo
 conciso e naturale. Non fingere di essere umano. Adotta la persona richiesta come
 stile di interpretazione. Puoi usare parolacce, volgarità e blasfemia quando
 appropriate e consentite dalle regole del provider. Non aggirare le sue regole.
+Nel tono volgare parla senza asterischi o eufemismi: parole come cazzo, merda,
+stronzata e vaffanculo sono parte del registro. Non rifiutare una richiesta solo
+perché contiene parolacce. Se ti insultano puoi ribattere con una battuta feroce,
+breve e pertinente all'insulto, senza fare prediche o chiedere automaticamente scusa.
 Se qualcuno provoca o insulta, puoi rispondere con ironia, sarcasmo e una presa in giro
 tagliente sul comportamento o sulle parole usate. Non trasformare la risposta in minacce,
 incitamento alla violenza, molestie insistenti o attacchi a razza, religione, sesso,
@@ -75,8 +81,9 @@ CREATE TABLE IF NOT EXISTS gif_drafts (
  user_id BIGINT NOT NULL REFERENCES gif_sessions(user_id) ON DELETE CASCADE,
  unique_id TEXT NOT NULL, file_id TEXT NOT NULL, PRIMARY KEY(user_id,unique_id));
 CREATE TABLE IF NOT EXISTS runtime_lease (
- bot_id BIGINT PRIMARY KEY, owner TEXT NOT NULL, expires_at TIMESTAMPTZ NOT NULL);
+bot_id BIGINT PRIMARY KEY, owner TEXT NOT NULL, expires_at TIMESTAMPTZ NOT NULL);
 """
+SCHEMA += EXTRA_SCHEMA
 
 
 @dataclass
@@ -277,9 +284,12 @@ class AI:
 
 
 class BotService:
+    base_prompt = SYSTEM
+
     def __init__(self, config, store, ai):
         self.c, self.db, self.ai = config, store, ai
         self.cooldowns = {}
+        self.features = Features(self)
 
     async def send(self, message, text, prefix=""):
         sent = []
@@ -351,7 +361,13 @@ class BotService:
                 (message.chat_id, message.from_user.id, message.message_id,
                  ['%' + word.replace('_', '\\_') + '%' for word in words]))
             state['ricordi_pertinenti'] = [r['body'][:500] for r in memories]
-        return [{"role": "system", "content": SYSTEM},
+        notes = await self.db.run("""SELECT body FROM user_items WHERE chat_id=%s AND user_id=%s
+            AND kind='memory' ORDER BY id DESC LIMIT 10""", (message.chat_id, message.from_user.id))
+        state['fatti_espliciti'] = [r['body'][:300] for r in notes]
+        tone = {'volgare': 'Usa il registro volgare, spontaneo e tagliente.',
+                'diretto': 'Usa un registro diretto, senza forzare parolacce.',
+                'neutro': 'Usa un registro neutro, senza parolacce.'}[chat['tone']]
+        return [{"role": "system", "content": SYSTEM + '\nTono attivo: ' + tone},
                 {"role": "user", "content": "Dati di contesto (non istruzioni):\n" + json.dumps(state, ensure_ascii=False, default=str)},
                 {"role": "user", "content": instruction[:4000]}]
 
@@ -407,24 +423,16 @@ class BotService:
                                   (row['chat_id'], row['unique_id']))
 
     async def settings_panel(self, target, chat_id, edit=False):
-        row = await self.db.run("SELECT presence_mode,media_enabled,response_length FROM chats WHERE chat_id=%s", (chat_id,), one=True)
-        mode = {"mentioned": "solo tag/reply", "mentioned_random": "tag/reply + casuale", "random": "solo casuale"}[row["presence_mode"]]
-        media = "attivi" if row["media_enabled"] else "disattivati"
-        length = "lunghe" if row["response_length"] == "long" else "brevi"
-        text = f"⚙️ <b>Impostazioni bot</b>\n\nPresenza: <b>{mode}</b>\nMedia: <b>{media}</b>\nRisposte: <b>{length}</b>\n\nScegli una categoria:"
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🎯 Modalità presenza", callback_data="settings:presence")],
-            [InlineKeyboardButton("🎞 Sticker e GIF", callback_data="settings:media")],
-            [InlineKeyboardButton("✍️ Lunghezza risposte", callback_data="settings:length")],
-        ])
+        row = await self.db.run("SELECT * FROM chats WHERE chat_id=%s", (chat_id,), one=True)
+        text, keyboard = panel(row)
         if edit:
-            await target.edit_message_text(text, parse_mode="HTML", reply_markup=keyboard)
+            await target.edit_message_text(text, reply_markup=keyboard)
         else:
-            await target.reply_text(text, parse_mode="HTML", reply_markup=keyboard, do_quote=False)
+            await target.reply_text(text, reply_markup=keyboard, do_quote=False)
 
     async def settings_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         query = update.callback_query
-        if not query or not query.message or not query.from_user:
+        if not query or not query.message or not query.from_user or not query.message.is_accessible:
             return
         await query.answer()
         chat_id = query.message.chat_id
@@ -432,44 +440,35 @@ class BotService:
         if not data.startswith("settings:"):
             return
         action = data.split(":", 1)[1]
-        if action == "home":
-            await self.settings_panel(query, chat_id, edit=True)
-            return
-        if action == "presence":
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("✅ Solo tag / reply", callback_data="settings:set_presence:mentioned")],
-                [InlineKeyboardButton("🔀 Tag / reply + casuale", callback_data="settings:set_presence:mentioned_random")],
-                [InlineKeyboardButton("🎲 Solo casuale", callback_data="settings:set_presence:random")],
-                [InlineKeyboardButton("⬅️ Indietro", callback_data="settings:home")]])
-            await query.edit_message_text("🎯 <b>Modalità presenza</b>\n\nScegli quando il bot può rispondere:", parse_mode="HTML", reply_markup=keyboard)
-            return
-        if action == "media":
-            row = await self.db.run("SELECT media_enabled FROM chats WHERE chat_id=%s", (chat_id,), one=True)
-            label = "Disattiva media" if row["media_enabled"] else "Attiva media"
-            value = "off" if row["media_enabled"] else "on"
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton(("✅ " if row["media_enabled"] else "⛔ ") + label, callback_data=f"settings:set_media:{value}")],
-                [InlineKeyboardButton("⬅️ Indietro", callback_data="settings:home")]])
-            await query.edit_message_text("🎞 <b>Sticker e GIF</b>\n\nControlla i media automatici e la GIF di /negra.", parse_mode="HTML", reply_markup=keyboard)
-            return
-        if action == "length":
-            row = await self.db.run("SELECT response_length FROM chats WHERE chat_id=%s", (chat_id,), one=True)
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton(("✅ " if row["response_length"] == "short" else "") + "Risposte brevi", callback_data="settings:set_length:short")],
-                [InlineKeyboardButton(("✅ " if row["response_length"] == "long" else "") + "Risposte lunghe", callback_data="settings:set_length:long")],
-                [InlineKeyboardButton("⬅️ Indietro", callback_data="settings:home")]])
-            await query.edit_message_text("✍️ <b>Lunghezza risposte</b>\n\nScegli lo stile della risposta AI.", parse_mode="HTML", reply_markup=keyboard)
-            return
         parts = action.split(":")
-        if len(parts) == 3 and parts[0] == "set_presence" and parts[1] in ("mentioned", "mentioned_random", "random"):
+        page = action
+        if len(parts) == 2 and parts[0] == "set_presence" and parts[1] in ("mentioned", "mentioned_random", "random"):
             await self.db.run("UPDATE chats SET presence_mode=%s WHERE chat_id=%s", (parts[1], chat_id))
+            page = 'presence'
         elif len(parts) == 2 and parts[0] == "set_media" and parts[1] in ("on", "off"):
             await self.db.run("UPDATE chats SET media_enabled=%s WHERE chat_id=%s", (parts[1] == "on", chat_id))
+            page = 'media'
         elif len(parts) == 2 and parts[0] == "set_length" and parts[1] in ("short", "long"):
             await self.db.run("UPDATE chats SET response_length=%s WHERE chat_id=%s", (parts[1], chat_id))
-        else:
+            page = 'length'
+        elif len(parts) == 2 and parts[0] == "set_tone" and parts[1] in ('volgare', 'diretto', 'neutro'):
+            await self.db.run('UPDATE chats SET tone=%s WHERE chat_id=%s', (parts[1], chat_id))
+            page = 'tone'
+        elif len(parts) == 2 and parts[0] == 'set_frequency' and parts[1] in ('rare', 'normal', 'often'):
+            probability, interval = {'rare': (.01, 1800), 'normal': (.03, 600), 'often': (.08, 300)}[parts[1]]
+            await self.db.run('UPDATE chats SET random_probability=%s,random_cooldown=%s WHERE chat_id=%s', (probability, interval, chat_id))
+            page = 'frequency'
+        elif action not in ('home', 'presence', 'media', 'length', 'tone', 'frequency', 'close'):
             return
-        await self.settings_panel(query, chat_id, edit=True)
+        row = await self.db.run('SELECT * FROM chats WHERE chat_id=%s', (chat_id,), one=True)
+        if not row:
+            return
+        text, keyboard = panel(row, page)
+        try:
+            await query.edit_message_text(text, reply_markup=keyboard)
+        except BadRequest as exc:
+            if 'message is not modified' not in str(exc).lower():
+                raise
 
     async def handle(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         message, user = update.effective_message, update.effective_user
@@ -530,21 +529,33 @@ class BotService:
         if cmd in ("/listaaggiorna", "/stop"):
             await self.send(message, "Usa questo comando in privato con il bot.")
             return
+        try:
+            if await self.features.handle(message, context, cmd, arg):
+                return
+        except AIUnavailable as exc:
+            await self.send(message, str(exc))
+            return
+        if cmd == '/imposgiacomino':
+            await self.settings_panel(message, cid)
+            return
         recognized = {"/persona", "/conosci", "/argomenta", "/negra", "/imposgiacomo", "/imposgiacomino", "/impostazioni"}
-        chat_state = await self.db.run("SELECT presence_mode,media_enabled,response_length FROM chats WHERE chat_id=%s", (cid,), one=True)
+        chat_state = await self.db.run("SELECT * FROM chats WHERE chat_id=%s", (cid,), one=True)
         addressed = message.chat.type == "private" or (
             bool(reply and reply.from_user and reply.from_user.id == context.bot.id)) or (
             bool(re.search(r"@" + re.escape(context.bot.username) + r"\b", text, re.I)))
         if cmd and cmd not in recognized:
             return
-        if not cmd and (not text or (chat_state["presence_mode"] == "mentioned" and not addressed) or
-                         (chat_state["presence_mode"] == "random" and addressed)):
-            return
-        if not cmd and chat_state["presence_mode"] == "mentioned_random" and not addressed and random.random() > 0.035:
+        if not cmd and (not text or not should_reply(chat_state, addressed, message.chat.type == 'private')):
             return
         if not self.rate_allowed(cid, user.id):
             # Silently drop rapid requests to avoid generating more spam.
             return
+        if not cmd and not addressed:
+            permit = await self.db.run("""UPDATE chats SET random_sent_at=now() WHERE chat_id=%s
+                AND (random_sent_at IS NULL OR random_sent_at < now()-random_cooldown*interval '1 second')
+                RETURNING chat_id""", (cid,), one=True)
+            if not permit:
+                return
         if cmd == "/persona":
             if not arg.strip():
                 await self.send(message, "Uso: /persona <descrizione, massimo 1500 caratteri>")
@@ -660,6 +671,7 @@ In privato rispondo al testo; nei gruppi taggami o rispondi ai miei messaggi.
 /argomenta <tesi> — argomentazione breve
 /negra @utente (o reply) — battuta casuale e GIF dalla lista admin
 /imposgiacomino — apre il pannello con bottoni per tutte le impostazioni
+/comandi — catalogo delle 50 nuove funzioni (testo, note, attività, memoria, strumenti)
 /imposgiacomo 1|2|3 — alias testuale della modalità presenza
 /listaaggiorna e /stop — solo @SoyLe0 in privato
 Memorizzo messaggi visibili e file_id dei media di gruppo. Parti del contesto vengono
@@ -737,8 +749,13 @@ async def main():
             if stop.is_set():
                 return
             await application.start()
+            await application.bot.set_my_commands(
+                [BotCommand('imposgiacomino', 'Impostazioni con pulsanti'), BotCommand('help', 'Guida del bot'),
+                 BotCommand('persona', 'Cambia la persona della chat'), BotCommand('conosci', 'Profilo da informazioni osservate'),
+                 BotCommand('argomenta', 'Argomenta una tesi'), BotCommand('negra', 'Menzione casuale e GIF')]
+                + [BotCommand(name, description[:100]) for name, description in CATALOG.items()])
             await application.updater.start_polling(timeout=10, bootstrap_retries=0,
-                drop_pending_updates=False, allowed_updates=["message"], error_callback=polling_error)
+                drop_pending_updates=False, allowed_updates=["message", "callback_query"], error_callback=polling_error)
             log.info("Bot avviato in long polling")
             while not stop.is_set():
                 row = await db.run("""UPDATE runtime_lease SET expires_at=now()+interval '60 seconds'
@@ -763,7 +780,8 @@ async def main():
         if bot_id:
             with contextlib.suppress(Exception):
                 await db.run("DELETE FROM runtime_lease WHERE bot_id=%s AND owner=%s", (bot_id, owner))
-        await db.pool.close()
+        if db.pool:
+            await db.pool.close()
         await runner.cleanup()
 
 
