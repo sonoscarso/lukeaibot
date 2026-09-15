@@ -150,28 +150,35 @@ def mention(user_id: int, name: str):
 
 class Store:
     def __init__(self, url):
-        self.pool = AsyncConnectionPool(
-            url, min_size=1, max_size=4, open=False, timeout=10,
+        self.url = url
+        self.pool = None
+
+    def new_pool(self):
+        return AsyncConnectionPool(
+            self.url, min_size=1, max_size=4, open=False, timeout=15,
             kwargs={"row_factory": dict_row, "prepare_threshold": None, "connect_timeout": 10},
             check=AsyncConnectionPool.check_connection)
 
     async def start(self):
         last_error = None
         for attempt in range(1, 6):
+            pool = self.new_pool()
             try:
-                await self.pool.open(wait=True, timeout=12)
-                async with self.pool.connection() as conn:
+                await pool.open(wait=True, timeout=12)
+                async with pool.connection() as conn:
                     await conn.execute("SELECT pg_advisory_xact_lock(73941825)")
                     await conn.execute(SCHEMA)
+                self.pool = pool
                 return
             except Exception as exc:
                 last_error = exc
                 with contextlib.suppress(Exception):
-                    await self.pool.close()
+                    await pool.close()
                 log.warning("PostgreSQL connection attempt %s/5 failed: %s", attempt, type(exc).__name__)
                 if attempt < 5:
                     await asyncio.sleep(min(2 * attempt, 8))
-        raise RuntimeError("PostgreSQL non raggiungibile: controlla DATABASE_URL, SSL e allowlist.") from last_error
+        raise RuntimeError("PostgreSQL non raggiungibile: controlla DATABASE_URL, SSL e allowlist. "
+                           "Usa una URI postgresql:// valida con ?sslmode=require.") from last_error
 
     async def run(self, sql, args=(), one=False):
         async with self.pool.connection() as conn:
